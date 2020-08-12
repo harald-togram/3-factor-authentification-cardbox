@@ -1,117 +1,83 @@
 #include <Wire.h>
 #include "Adafruit_MPR121.h"
+#include <SoftwareSerial.h>
+#include <EEPROM.h>     // We are going to read and write PICC's UIDs from/to EEPROM
+#include <SPI.h>        // RC522 Module uses SPI protocol
+#include <MFRC522.h>
+#include <Servo.h>
+#include <NeoPixelBus.h>
+#include <Adafruit_Fingerprint.h>
 
 #ifndef _BV
 #define _BV(bit) (1 << (bit)) 
 #endif
 
-Adafruit_MPR121 cap = Adafruit_MPR121();
+#define wipeB A1     // Button pin for WipeMode
 
+#define fingerSerial Serial1
+#define espSerial Serial3
+#define piSerial Serial2
+
+#define stepPin 40
+#define dirPin  42
+#define enPin   38
+#define ledStrip 10
+#define relayPin 33
+#define camServoPin 37
+#define boxServoPin 28
+
+Adafruit_MPR121 cap = Adafruit_MPR121();
 // Keeps track of the last pins touched
 // so we know when buttons are 'released'
 uint16_t lasttouched = 0;
 uint16_t currtouched = 0;
 
-#define COMMON_ANODE
-
-#ifdef COMMON_ANODE
-#define LED_ON LOW
-#define LED_OFF HIGH
-#else
-#define LED_ON HIGH
-#define LED_OFF LOW
-#endif
-
-
-#define wipeB A4     // Button pin for WipeMode
-
-#define stepPin 5
-#define dirPin  6
-#define enPin   8
-#define RECV_PIN 7
-#define ledStrip 3
-
-#include <EEPROM.h>     // We are going to read and write PICC's UIDs from/to EEPROM
-#include <SPI.h>        // RC522 Module uses SPI protocol
-#include <MFRC522.h>
-#include <IRremote.h>
-#include <Servo.h>
-#include <NeoPixelBus.h>
-
 const uint16_t PixelCount = 24; // this example assumes 4 pixels, making it smaller will cause a failure
-const uint8_t PixelPin = 3; 
+const uint8_t PixelPin = ledStrip;
+NeoPixelBus<NeoRgbwFeature, Neo800KbpsMethod> strip(PixelCount, PixelPin);
 
-IRrecv irrecv(RECV_PIN);
-decode_results results;
-
-#define SS_PIN 10
-#define RST_PIN 9
+#define SS_PIN 46
+#define RST_PIN 48
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 
-long numre[] = {0xE0E08877,0xE0E020DF,0xE0E0A05F,0xE0E0609F,0xE0E010EF,0xE0E0906F,0xE0E050AF,0xE0E030CF,0xE0E0B04F,0xE0E0708F};
+//til koder
 int kode[6];
 int kodeTjek[] = {1,2,3,4,5,6};         
 int tjekKoden = 0;
+bool erKodeRigtig[] = {false,false,false,false,false,false};
 
-Servo myservo;
-NeoPixelBus<NeoRgbwFeature, Neo800KbpsMethod> strip(PixelCount, PixelPin);
+//trin
+bool nummerKlaret = false;
+bool taleKlaret = false;
+bool matchKlaret = false;
+bool fingerKlaret = false;
+bool boolLys = true;
+bool lysTilstand;
+bool start = false;
 
-void setup() {
-    if (!cap.begin(0x5A)) {
-    Serial.println("MPR121 not found, check wiring?");
-    while (1);
-  }
-  Serial.println("MPR121 found!");
-  pinMode(wipeB, INPUT_PULLUP);
-  pinMode(stepPin, OUTPUT);
-  pinMode(dirPin, OUTPUT);
-  pinMode(enPin, OUTPUT);
-  pinMode(ledStrip, OUTPUT);
-  digitalWrite(dirPin, LOW);
-  digitalWrite(enPin, HIGH); 
-  irrecv.enableIRIn();
-  
-  
-  Serial.begin(115200);
-  setupRfid();
-  strip.Begin();
-  strip.Show();
-  drej(0,0);
-  }
-
-String inputString = "";
-
-long nyTid;
-long gammelTid;
-int tal;
-char streng[200];
+//bools
 bool lys;
 bool stringComplete = false;
-int hastighed = 1000;
+bool numpad = false;
 bool programMode = false;
-bool erKodeRigtig[] = {false,false,false,false,false,false};
-bool infrarodKlaret = false;
-bool matchKlaret = false;
+bool lysKlaret = false;
 
+//ints
+int tal;
+int taleTal;
+int hastighed = 1000;
 int tryk;
 int i=0;
-int pos = 0;
-uint8_t successRead;
 int kodeTal;
+int pos = 0;
+int light;
+uint8_t successRead;
 
-byte storedCard[4];   // Stores an ID read from EEPROM
-byte readCard[4];   // Stores scanned ID read from RFID Module
-byte masterCard[4];
+//longs
+long nytid;
+long gammelTid;
 
-byte colorSaturation = 255;
-RgbColor red(colorSaturation, 0, 0);
-RgbColor green(0, colorSaturation, 0);
-RgbColor blue(0, 0, colorSaturation);
-RgbColor white(colorSaturation);
-RgbColor black(0);
-
-bool boolLys = true;
-
+//movement
 int x = 150;
 int y = 120;
 int gammelHoz;
@@ -127,24 +93,96 @@ int forrigeHoz;
 int forrigeVert;
 int nuHoz = 0;
 int nuVert = 60;
-bool numpad = false;
 
-void loop() {
-  loopRfid();
-  //infraRod();
-}
-
+//strings
 String tjek = "";
-int tjekMatch = 0;
+String streng = "";
+String inputString = "";
 
-void loopRfid(){ 
+//kort
+byte storedCard[4];   // Stores an ID read from EEPROM
+byte readCard[4];   // Stores scanned ID read from RFID Module
+byte masterCard[4];
+
+//farver
+byte colorSaturation = 255;
+RgbColor red(colorSaturation, 0, 0);
+RgbColor green(0, colorSaturation, 0);
+RgbColor blue(0, 0, colorSaturation);
+RgbColor white(colorSaturation);
+RgbColor black(0);
+
+Servo camServo;
+Servo boxServo;
+
+
+Adafruit_Fingerprint finger = Adafruit_Fingerprint(&fingerSerial);
+
+void setup() {
+  Serial.begin(115200);
+  fingerSerial.begin(57600);
+  espSerial.begin(115200);
+  piSerial.begin(115200);
+
+  if (finger.verifyPassword()) {
+    Serial.println("Found fingerprint sensor!!1");
+  }
+  else {
+    Serial.println("Did not find fingerprint sensor :(");
+    while (1) { delay(1); }
+  }
+  Serial.println(F("Reading sensor parameters"));
+  finger.getParameters();
+  Serial.print(F("Status: 0x")); Serial.println(finger.status_reg, HEX);
+  Serial.print(F("Sys ID: 0x")); Serial.println(finger.system_id, HEX);
+  Serial.print(F("Capacity: ")); Serial.println(finger.capacity);
+  Serial.print(F("Security level: ")); Serial.println(finger.security_level);
+  Serial.print(F("Device address: ")); Serial.println(finger.device_addr, HEX);
+  Serial.print(F("Packet len: ")); Serial.println(finger.packet_len);
+  Serial.print(F("Baud rate: ")); Serial.println(finger.baud_rate);
+  
+  finger.getTemplateCount();
+
+  if (finger.templateCount == 0) {
+    Serial.print("Sensor doesn't contain any fingerprint data. Please run the 'enroll' example.");
+  } 
+  else {
+    Serial.println("Waiting for valid finger...");
+    Serial.print("Sensor contains "); Serial.print(finger.templateCount); Serial.println(" templates");
+  }
+  
+    if (!cap.begin(0x5A)) {
+    Serial.println("MPR121 not found, check wiring?");
+    while (1);
+    }
+  Serial.println("MPR121 found!");
+  pinMode(wipeB, INPUT_PULLUP);
+  pinMode(stepPin, OUTPUT);
+  pinMode(dirPin, OUTPUT);
+  pinMode(enPin, OUTPUT);
+  pinMode(ledStrip, OUTPUT);
+  pinMode(relayPin, OUTPUT);
+  digitalWrite(dirPin, LOW);
+  digitalWrite(enPin, HIGH);   
+  digitalWrite(relayPin, HIGH);
+  setupRfid();
+  strip.Begin();
+  strip.Show();
+  drej(0,0);
+  }
+
+  void loop(){
+      loopRfid();
+  }
+
+  void loopRfid(){ 
   do {
     successRead = getID();  // sets successRead to 1 when we get read from reader otherwise 0
     // When device is in use if wipe button pressed for 10 seconds initialize Master Card wiping
     if (digitalRead(wipeB) == LOW) { // Check if button is pressed
       // Visualize normal operation is iterrupted by pressing wipe button Red is like more Warning to user
-    strip.ClearTo(RgbColor(0,100,0)); 
-    strip.Show();
+      strip.ClearTo(RgbColor(0,100,0)); 
+      strip.Show();
       // Give some feedback
       Serial.println(F("Wipe Button Pressed"));
       Serial.println(F("Master Card will be Erased! in 10 seconds"));
@@ -170,14 +208,7 @@ void loopRfid(){
       Serial.println(F("Master Card Scanned"));
       Serial.println(F("Exiting Program Mode"));
       Serial.println(F("-----------------------------"));
-      i=0;
-      programMode = false;
-      infrarodKlaret = false;
-      matchKlaret = false;
-      tjekKoden = 0;
-      for (int i=0; i<6; i++){
-        erKodeRigtig[i] = false;
-      }
+      startOver();
     }
     else {
       if ( findID(readCard) ) { // If scanned card is known delete it
@@ -208,22 +239,7 @@ void loopRfid(){
       Serial.println(F("Scan a PICC to ADD or REMOVE to EEPROM"));
       Serial.println(F("Scan Master Card again to Exit Program Mode"));
       Serial.println(F("-----------------------------"));
-      while (infrarodKlaret==false){
-        infraRod();
-        if (infrarodKlaret==true){
-          drej(60,0);  
-        for (int i=0; i<255; i++){
-            strip.ClearTo(RgbwColor(0,0,0,i));
-            strip.Show();
-            delay(5);
-         }
-        }
-      } 
-      while (matchKlaret == false){
-        esp();
-      }
-      strip.ClearTo(RgbwColor(0,0,0,10));
-      strip.Show();
+      twoFactor();
     }
     else {
       if ( findID(readCard) ) { // If not, see if the card is in the EEPROM
@@ -237,16 +253,11 @@ void loopRfid(){
     }
   }
 }
-int light;
-
-bool lysTilstand;
-bool start = false;
 
 void esp(){
-  tjekMatch = 0;
-  while (Serial.available()) {
+  while (espSerial.available()) {
     // get the new byte:
-    char inChar = (char)Serial.read();
+    char inChar = (char)espSerial.read();
     streng[tal] = inChar;
     tal++;
     inputString += inChar;
@@ -256,26 +267,24 @@ void esp(){
       stringComplete = true;
     }
   }
-      if (stringComplete) {
-    if (inputString == "Match Face ID: 0\n" || inputString == "Match Face ID: 1\n" || inputString == "Match Face ID: 2\n" || inputString == "Match Face ID: 3\n" || inputString == "Match Face ID: 4\n"){
-      drej(0,0);
-      strip.ClearTo(RgbwColor(0,0,0,0));
-      strip.Show();
-      light = 0;
-      Serial.println("MATCH!!");
-      Serial.end();
-      myservo.attach(4);
+    if (stringComplete) {
+      if (inputString == "Match Face ID: 0\n" || inputString == "Match Face ID: 1\n" || inputString == "Match Face ID: 2\n" || inputString == "Match Face ID: 3\n" || inputString == "Match Face ID: 4\n"){
+        drej(0,0);
+        strip.ClearTo(RgbwColor(0,0,0,0));
+        strip.Show();
+        light = 0;
+        piSerial.println("MATCH!!");
+        boxServo.attach(boxServoPin);
         for (pos = 0; pos <= 90; pos += 1) {
-          myservo.write(pos);              // tell servo to go to position in variable 'pos'
-          delay(15);                       // waits 15ms for the servo to reach the position
-    }
-    delay(10000);
+           boxServo.write(pos);              // tell servo to go to position in variable 'pos'
+           delay(15);                       // waits 15ms for the servo to reach the position
+          }
+        delay(10000);
         for (pos = 90; pos >= 0; pos -= 1) { // goes from 180 degrees to 0 degrees
-          myservo.write(pos);              // tell servo to go to position in variable 'pos'
-          delay(15);                       // waits 15ms for the servo to reach the position
+           boxServo.write(pos);              // tell servo to go to position in variable 'pos'
+           delay(15);                       // waits 15ms for the servo to reach the position
       }
-        myservo.detach();
-        Serial.begin(115200);
+        boxServo.detach();
         matchKlaret = true;
     }
     else{
@@ -297,20 +306,21 @@ void esp(){
         Serial.println(y);
         yString = "";
       }
-    if (y < 30 || y > 110){
-        Serial.end();
-        nuVert = nuVert + map(x, 0, 240, -5, 5);
+    if (y < 40  || y > 100){
+        espSerial.end();
+        nuVert = nuVert + map(y, 0, 240, -10, 10);
         drej(nuVert, nuHoz);
         y = 100;
-        Serial.begin(115200);      
-        Serial.println("y er");
+        espSerial.begin(115200);      
+        Serial.print("y er ");
+        Serial.print(y);
     }
     if (x < 130 || x > 190){
-        Serial.end();
-        nuHoz = nuHoz + map(x,0,320,-115,115);
-        drej(55, nuHoz);
+        espSerial.end();
+        nuHoz = nuHoz + map(x,0,320,-100,100);
+        drej(nuVert, nuHoz);
         x = 150;
-        Serial.begin(115200);
+        espSerial.begin(115200);
         Serial.print("nuhoz er ");
         Serial.println(nuHoz);  
     }
@@ -323,13 +333,11 @@ void esp(){
     // clear the string:
     inputString = "";
     tjek = "";
-    tjekMatch = 0;
     stringComplete = false;
   }
 }
 
-
-void infraRod(){ //tjek om den har modtaget et nummer
+void nummer(){ //tjek om den har modtaget et nummer
     touchTjek();  
       if (numpad==true){
         numpad=false;
@@ -347,9 +355,6 @@ void infraRod(){ //tjek om den har modtaget et nummer
         }
         Serial.println();
          if (kodeTal>5){
-           Serial.println("hey");
-          strip.ClearTo(RgbColor(0,20,0));
-          strip.Show();
           kodeTal=0;
           for (int a=0; a<6; a++){
             if (kode[a] == kodeTjek[a]){
@@ -366,26 +371,27 @@ void infraRod(){ //tjek om den har modtaget et nummer
             }
             if(erKodeRigtig[a]==false){
               tjekKoden = 0;
+              strip.ClearTo(RgbColor(0,20,0));
+              strip.Show();
             }
             if (tjekKoden==6){
               Serial.println("koden skulle være der");
-              infrarodKlaret=true;
-              delay(50);
-              drej(90,0);
+              nummerKlaret=true;
+              strip.ClearTo(RgbwColor(20,50,0,0));
+              strip.Show();
             }
            }
         for (int b=0; b<6; b++){
                  erKodeRigtig[b] = false;
                  kode[b] = 0;
+                 kodeTal = 0;
               }
               tjekKoden=0;
             }
-     }
+       }
     }
 
-
 void setupRfid(){
-
   //Protocol Configuration  // Initialize serial communications with PC
   SPI.begin();           // MFRC522 Hardware uses SPI protocol
   mfrc522.PCD_Init();    // Initialize MFRC522 Hardware
@@ -452,10 +458,114 @@ void setupRfid(){
   cycleLeds();    // Everything ready lets give user some feedback by cycling leds
 }
 
+void twoFactor(){
+      while (nummerKlaret==false){
+        nummer();
+      }
+      while (fingerKlaret == false){
+        getFingerprintID();
+        if (fingerKlaret == true){
+          Serial.println("fingerKlaret er true");
+          strip.ClearTo(RgbColor(0,50,25));
+          strip.Show();
+          digitalWrite(relayPin, LOW);
+          delay(100);
+          digitalWrite(relayPin, HIGH); 
+        }
+      }
+      while (taleKlaret==false){
+        tale();
+        if (taleKlaret==true){
+          drej(60,0);
+          Serial.println("taleklaret er True");  
+          for (int i=0; i<255; i++){
+            strip.ClearTo(RgbwColor(0,0,0,i));
+            strip.Show();
+            delay(5);
+         }
+        }
+      }
+      while (matchKlaret == false){
+        esp();
+      }
+      strip.ClearTo(RgbwColor(0,0,0,10));
+      strip.Show();
+      delay(100);
+    }
+
+    void startOver(){      
+      i=0;
+      programMode = false;
+      nummerKlaret = false;
+      matchKlaret = false;
+      taleKlaret = false;
+      fingerKlaret = false;
+      tjekKoden = 0;
+      for (int i=0; i<6; i++){
+        erKodeRigtig[i] = false;
+      }
+    }
+
+  void tale(){
+  if (piSerial.available()){
+    if (piSerial.read() == 'o'){
+      Serial.println("opened");
+      taleKlaret=true; 
+    }
+  }
+ }
+
+ void touchTjek(){
+    // Get the currently touched pads
+  currtouched = cap.touched();
+  
+  for (uint8_t i=0; i<12; i++) {
+    // it if *is* touched and *wasnt* touched before, alert!
+    if ((currtouched & _BV(i)) && !(lasttouched & _BV(i)) ) {
+      Serial.print(i); Serial.println(" touched"); tryk = i; numpad = true;
+    }
+    // if it *was* touched and now *isnt*, alert!
+    if (!(currtouched & _BV(i)) && (lasttouched & _BV(i)) ) {
+      Serial.print(i); Serial.println(" released");
+    }
+  }
+ }
+
+void drej(int vert, int hoz){
+  camServo.attach(camServoPin);
+  digitalWrite(enPin, LOW);
+  camServo.write(vert);
+  delay(500);
+  if (hoz<gammelHoz){
+    digitalWrite(dirPin, HIGH);
+  }
+  while (hoz<gammelHoz){
+    digitalWrite(stepPin, HIGH);
+    delayMicroseconds(hastighed);
+    digitalWrite(stepPin, LOW);
+    delayMicroseconds(hastighed);
+    gammelHoz -= 1;
+  }
+  if (hoz>gammelHoz){
+    digitalWrite(dirPin, LOW);
+  }
+  while (hoz>gammelHoz){
+    digitalWrite(stepPin, HIGH);
+    delayMicroseconds(hastighed);
+    digitalWrite(stepPin, LOW);
+    delayMicroseconds(hastighed);
+    gammelHoz++;
+  }
+  digitalWrite(enPin, HIGH);
+  //delay(500);
+  camServo.detach();
+}
 
 void granted ( uint16_t setDelay) {
-  strip.ClearTo(RgbColor(0,0,50));
+  strip.ClearTo(RgbColor(10,10,0));
   strip.Show();
+  twoFactor();
+  startOver();
   }
 
 ///////////////////////////////////////// Access Denied  ///////////////////////////////////
@@ -522,9 +632,9 @@ void cycleLeds() {
 //////////////////////////////////////// Normal Mode Led  ///////////////////////////////////
 void normalModeOn () {
   for (int i=0; i<PixelCount; i++){
-   strip.SetPixelColor(i,RgbColor(0,0,10));
-   strip.Show();
+   strip.SetPixelColor(i,RgbColor(0,0,00));
   }
+  strip.Show();
 }
 
 //////////////////////////////////////// Read an ID from EEPROM //////////////////////////////
@@ -680,64 +790,86 @@ bool monitorWipeButton(uint32_t interval) {
   return true;
 }
 
-void drejEnOmgang(){
-      digitalWrite(enPin, LOW);
-      digitalWrite(dirPin, HIGH); 
-      for (int i=0; i<6;i++){
-        digitalWrite(stepPin, HIGH);
-        delay(100);
-        digitalWrite(stepPin, LOW);
-      }
-      digitalWrite(dirPin, LOW);
-      Serial.println("nået gennem infrarød");
-      digitalWrite(enPin, HIGH);
-}
+uint8_t getFingerprintID() {
+  uint8_t p = finger.getImage();
+  switch (p) {
+    case FINGERPRINT_OK:
+      Serial.println("Image taken");
+      break;
+    case FINGERPRINT_NOFINGER:
+      Serial.println("No finger detected");
+      return p;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      Serial.println("Communication error");
+      return p;
+    case FINGERPRINT_IMAGEFAIL:
+      Serial.println("Imaging error");
+      return p;
+    default:
+      Serial.println("Unknown error");
+      return p;
+  }
 
-void drej(int vert, int hoz){
-  myservo.attach(2);
-  digitalWrite(enPin, LOW);
-  myservo.write(vert);
-  delay(500);
-  if (hoz<gammelHoz){
-    digitalWrite(dirPin, HIGH);
-  }
-  while (hoz<gammelHoz){
-    digitalWrite(stepPin, HIGH);
-    delayMicroseconds(hastighed);
-    digitalWrite(stepPin, LOW);
-    delayMicroseconds(hastighed);
-    gammelHoz -= 1;
-  }
-  if (hoz>gammelHoz){
-    digitalWrite(dirPin, LOW);
-  }
-  while (hoz>gammelHoz){
-    digitalWrite(stepPin, HIGH);
-    delayMicroseconds(hastighed);
-    digitalWrite(stepPin, LOW);
-    delayMicroseconds(hastighed);
-    gammelHoz++;
-  }
-  digitalWrite(enPin, HIGH);
-  //delay(500);
-  myservo.detach();
-}
+  // OK success!
 
-void touchTjek(){
-    // Get the currently touched pads
-  currtouched = cap.touched();
+  p = finger.image2Tz();
+  switch (p) {
+    case FINGERPRINT_OK:
+      Serial.println("Image converted");
+      break;
+    case FINGERPRINT_IMAGEMESS:
+      Serial.println("Image too messy");
+      return p;
+    case FINGERPRINT_PACKETRECIEVEERR:
+      Serial.println("Communication error");
+      return p;
+    case FINGERPRINT_FEATUREFAIL:
+      Serial.println("Could not find fingerprint features");
+      return p;
+    case FINGERPRINT_INVALIDIMAGE:
+      Serial.println("Could not find fingerprint features");
+      return p;
+    default:
+      Serial.println("Unknown error");
+      return p;
+  }
   
-  for (uint8_t i=0; i<12; i++) {
-    // it if *is* touched and *wasnt* touched before, alert!
-    if ((currtouched & _BV(i)) && !(lasttouched & _BV(i)) ) {
-      Serial.print(i); Serial.println(" touched"); tryk = i; numpad = true;
-    }
-    // if it *was* touched and now *isnt*, alert!
-    if (!(currtouched & _BV(i)) && (lasttouched & _BV(i)) ) {
-      Serial.print(i); Serial.println(" released");
-    }
-  }
+  // OK converted!
+  p = finger.fingerSearch();
+  if (p == FINGERPRINT_OK) {
+    Serial.println("Found a print match!");
+    fingerKlaret = true;
+  } else if (p == FINGERPRINT_PACKETRECIEVEERR) {
+    Serial.println("Communication error");
+    return p;
+  } else if (p == FINGERPRINT_NOTFOUND) {
+    Serial.println("Did not find a match");
+    return p;
+  } else {
+    Serial.println("Unknown error");
+    return p;
+  }   
+  
+  // found a match!
+  Serial.print("Found ID #"); Serial.print(finger.fingerID); 
+  Serial.print(" with confidence of "); Serial.println(finger.confidence); 
 
-  // reset our state
-  lasttouched = currtouched;
- }
+  return finger.fingerID;
+}
+
+// returns -1 if failed, otherwise returns ID #
+int getFingerprintIDez() {
+  uint8_t p = finger.getImage();
+  if (p != FINGERPRINT_OK)  return -1;
+
+  p = finger.image2Tz();
+  if (p != FINGERPRINT_OK)  return -1;
+
+  p = finger.fingerFastSearch();
+  if (p != FINGERPRINT_OK)  return -1;
+  
+  // found a match!
+  Serial.print("Found ID #"); Serial.print(finger.fingerID); 
+  Serial.print(" with confidence of "); Serial.println(finger.confidence);
+  return finger.fingerID; 
+}
